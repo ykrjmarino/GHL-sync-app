@@ -1,8 +1,6 @@
 import express from 'express';
 import axios from 'axios';
 import dotenv from 'dotenv';
-import qs from 'qs';
-import fs from 'fs';
 
 dotenv.config(); 
 
@@ -12,115 +10,98 @@ const port = process.env.PORT || 8080;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const CLIENT_ID = process.env.CLIENT_ID;
-const CLIENT_SECRET = process.env.CLIENT_SECRET;
-
-function getTokens() {
-  const raw = fs.readFileSync("tokens.json");
-  return JSON.parse(raw);
-}
-
 //practice console log
-/*
-app.post('/webhook/nola', async (req, res) => {
-  const contact = req.body;
-  const triggered_tag = contact.customData?.triggered_tag;
-
+//test for marketplace app testing
+app.post('/p', async (req, res) => { 
   console.log('==================================================');
-  console.log('Triggered tag from workflow:', contact.customData?.triggered_tag);
-  console.log('Intern contact ID from workflow:', contact.contact_id);
+  console.log('Raw payload:', JSON.stringify(req.body, null, 2));
 
-  // rest of your code...
-  res.sendStatus(200); // optional if just testing
-});
-*/
-
-//OAuth callback endpoint to exchange code for access token
-app.get('/oauth/callback', async (req, res) => {
-  const code = req.query.code; //from HighLevel
-  if (!code) return res.status(400).send('No code provided');
-
+  // Get the actual data key (first key of the object)
+  const rawKey = Object.keys(req.body)[0];
+  let contact = {};
+  
   try {
-    const response = await axios.post(
-      'https://services.leadconnectorhq.com/oauth/token',
-      qs.stringify({
-        grant_type: 'authorization_code',
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        redirect_uri: process.env.REDIRECT_URI,
-        code: code
-      }),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-
-    const { access_token } = response.data;
-    console.log('Access token:', access_token);
-    console.log(response.data);
-
-    res.json(response.data);
+    contact = JSON.parse(rawKey);
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).send('Error exchanging code for token');
+    console.error('Failed to parse contact:', err.message);
   }
+
+  const triggered_tag = contact.triggered_tag;
+  const source_contact_id = contact.sync_contact_id;
+
+  console.log('Triggered tag from workflow:', triggered_tag ?? 'undefined');
+  console.log('Sync contact ID from workflow:', source_contact_id ?? 'undefined');
+  console.log('First name:', contact.first_name ?? 'undefined');
+  console.log('Last name:', contact.last_name ?? 'undefined');
+
+  res.sendStatus(200);
 });
 
 //this is the endpoint the webhook will call
-app.post('/webhook/nola', async (req, res) => {
-  //const ACCESS_TOKEN = process.env.ACCESS_TOKEN;
-  //const LOCATION_ID = process.env.LOCATION_ID; 
-          //for ref only (optional),, this is static
-  const CUSTOM_FIELD_ID = process.env.CUSTOM_FIELD_ID;
-  const CUSTOM_FIELD_KEY = process.env.CUSTOM_FIELD_KEY;
+app.post('/sync', async (req, res) => {
+  // HighLevel sends the payload as a single key
+  const rawPayload = Object.keys(req.body)[0];
+  const contactData = JSON.parse(rawPayload);
 
-  const tokens = getTokens();
-  const accessToken = tokens.access_token;
-  const locationId = tokens.locationId;
+  const ACCESS_TOKEN = contactData.pit;
+  const LOCATION_ID = contactData.location_id;
+  const CUSTOM_FIELD_ID = contactData.custom_field_id; 
+  const CUSTOM_FIELD_KEY = contactData.custom_field_key; 
 
-  // // HighLevel sends the payload as a single key
-  // const rawPayload = Object.keys(req.body)[0];
-  // const contact = JSON.parse(rawPayload); // now you get proper fields
-  const contact = req.body.data;
+  const contact = JSON.parse(rawPayload); // now you get proper fields
+  //const contact = req.body.data;
 
-  console.log('Received contact:', contact.contact_id, contact.first_name, contact.last_name);
+  console.log('Received contact:', contact.sync_contact_id, contact.first_name, contact.last_name);
 
   console.log('Received payload:', JSON.stringify(req.body, null, 2));
   const triggered_tag = contact.triggered_tag;
                       //contact.customData?.triggered_tag;
   console.log('==================================================');
   //console.log('Received full body:', contact);
-  console.log('Received contact:', contact.contact_id, contact.first_name, contact.last_name);
+  console.log('Received contact:', contact.sync_contact_id, contact.first_name, contact.last_name);
 
-  const source_contact_id = contact.intern_contact_id || req.body.extras.contactId; //haba naman variable name ya
+  const source_contact_id = contact.sync_contact_id || req.body.extras.contactId; //haba naman variable name ya
 
   try {
-    //fetch all contacts from NOLA (or apply allowed filters like email)
-    const response = await axios.get(
-      `https://services.leadconnectorhq.com/contacts`,
-      {
-        headers: {
-          Accept: 'application/json',
-          Version: '2021-07-28',
-          Authorization: `Bearer ${accessToken}`
-        },
-        params: {
-          locationId: locationId,
-          limit: 100  // optional, you can page if more than 100
-        }
-      }
-    );
+    let page = 1;
+    let existingContact = null;
+    let totalFetched = 0;
 
-    //filter in code by custom field intern_contact_id
-    const existingContact = response.data.contacts.find(c =>
-      c.customFields?.some(f => f.id === CUSTOM_FIELD_ID && f.value?.trim() === source_contact_id?.trim())
-    );
-    
-    // lol, mali pala to, tagal ko nagdebug tas yan lang.. for memories::
-    // uh naging tama na sya when i use it sa private app sa marketplace.. ewan bakit,,
-    // const existingContact = response.data.contacts.find(c =>
-    //   c.customFields?.some(f => f.id === CUSTOM_FIELD_ID && f.field_value === source_contact_id)
-    // );
+    while (true) {
+      //fetch all contacts from NOLA (or apply allowed filters like email)
+      const response = await axios.get(
+        `https://services.leadconnectorhq.com/contacts`,
+        {
+          headers: {
+            Accept: 'application/json',
+            Version: '2021-07-28',
+            Authorization: `Bearer ${ACCESS_TOKEN}`
+          },
+          params: {
+            locationId: LOCATION_ID,
+            limit: 100,  //limit is 100 max i think
+            page: page //pagination para sa loops
+          }
+        }
+      );
+
+      const contacts = response.data.contacts;
+      totalFetched += contacts.length; //track total fetched for logging
+
+      //filter in code by custom field sync_contact_id
+      existingContact = response.data.contacts.find(c =>
+        c.customFields?.some(f => f.id === CUSTOM_FIELD_ID && f.value?.trim() === source_contact_id?.trim())
+      );
+
+      if (existingContact) break; //found
+
+      if (contacts.length < 100) break; //no more pages
+
+      page++; //increment page for next loop
+    }
+
+    console.log('Total contacts checked:', totalFetched);
     console.log('source_contact_id:', source_contact_id);
-    console.log('Total contacts:', response.data.contacts.length);
     console.log('existingContact:', existingContact);
     console.log('Existing NOLA contact:', existingContact);
 
@@ -143,7 +124,7 @@ app.post('/webhook/nola', async (req, res) => {
         customFields: [
           {
             id: CUSTOM_FIELD_ID, //is the id of our custom field na antagal ko hinanap
-            key: CUSTOM_FIELD_KEY, //contact.intern_contact_id
+            key: CUSTOM_FIELD_KEY, //contact.sync_contact_id
             field_value: source_contact_id
           }
         ]
@@ -160,7 +141,7 @@ app.post('/webhook/nola', async (req, res) => {
               'Content-Type': 'application/json',
               Accept: 'application/json',
               Version: '2021-07-28',
-              Authorization: `Bearer ${accessToken}`
+              Authorization: `Bearer ${ACCESS_TOKEN}`
             }
           }
         );
@@ -202,7 +183,7 @@ app.post('/webhook/nola', async (req, res) => {
             field_value: source_contact_id
           }
         ],
-        locationId: locationId
+        locationId: LOCATION_ID
       };
 
       console.log('Payload to NOLA (create):', JSON.stringify(createData, null, 2));
@@ -215,20 +196,21 @@ app.post('/webhook/nola', async (req, res) => {
             'Content-Type': 'application/json',
             Accept: 'application/json',
             Version: '2021-07-28',
-            Authorization: `Bearer ${accessToken}`
+            Authorization: `Bearer ${ACCESS_TOKEN}`
           }
         }
       );
 
       console.log('Created new NOLA contact:', createResponse.data);
 
-      //check if intern_contact_id is present
+      //check if sync_contact_id is present
       const createdCustomFields = createResponse.data.contact.customFields || [];
-      const internIdField = createdCustomFields.find(f => f.id === CUSTOM_FIELD_ID);
-      if (internIdField) {
-        console.log('✅ intern_contact_id saved:', internIdField.value);
+      const syncIdField = createdCustomFields.find(f => f.id === CUSTOM_FIELD_ID);
+      
+      if (syncIdField) {
+        console.log('✅ sync_contact_id saved:', syncIdField.value);
       } else {
-        console.warn('⚠️ intern_contact_id not saved in customFields!');
+        console.warn('⚠️ sync_contact_id not saved in customFields!');
       }
     }
     res.sendStatus(200);
@@ -252,7 +234,7 @@ app.post('/webhook/nola', async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.send("Backend is running wewewe"));
+app.get("/", (req, res) => res.send("Backend is running sync proj"));
 
 app.listen(port, () => {
   // db.connect();
