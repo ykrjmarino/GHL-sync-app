@@ -1,6 +1,6 @@
 import express from 'express';
 import axios from 'axios';
-import dotenv from 'dotenv';
+import dotenv from 'dotenv'; //no need for this, it is not used in this code. you can remove this line. but i am a sentimental person so i will let it stay. it reminds me of the good old days when i used to use .env files... memories.
 
 dotenv.config(); 
 
@@ -12,7 +12,7 @@ app.use(express.urlencoded({ extended: true }));
 
 //practice console log
 //test for marketplace app testing
-app.post('/p', async (req, res) => { 
+app.post('/marketplace/testing', async (req, res) => { 
   console.log('==================================================');
   console.log('Raw payload:', JSON.stringify(req.body, null, 2));
 
@@ -39,7 +39,9 @@ app.post('/p', async (req, res) => {
 
 //this is the endpoint the webhook will call
 app.post('/sync', async (req, res) => {
-  // HighLevel sends the payload as a single key
+  /*
+  //====THIS IS ONLY WORKING WHEN TESTING IN MARKETPLACE APP====//
+          // HighLevel sends the payload as a single key //
   const rawPayload = Object.keys(req.body)[0];
   const contactData = JSON.parse(rawPayload);
 
@@ -49,11 +51,18 @@ app.post('/sync', async (req, res) => {
   const CUSTOM_FIELD_KEY = contactData.custom_field_key; 
 
   const contact = JSON.parse(rawPayload); // now you get proper fields
-  //const contact = req.body.data;
+  console.log('Received payload:', JSON.stringify(req.body, null, 2));
+  */
+
+  const contact = req.body.data;
+  const ACCESS_TOKEN = contact.pit;
+  const LOCATION_ID = contact.location_id;
+  const CUSTOM_FIELD_ID = contact.custom_field_id;
+  const CUSTOM_FIELD_KEY = contact.custom_field_key;
 
   console.log('Received contact:', contact.sync_contact_id, contact.first_name, contact.last_name);
 
-  console.log('Received payload:', JSON.stringify(req.body, null, 2));
+  
   const triggered_tag = contact.triggered_tag;
                       //contact.customData?.triggered_tag;
   console.log('==================================================');
