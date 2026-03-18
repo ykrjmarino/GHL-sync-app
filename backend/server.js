@@ -59,9 +59,6 @@ app.post('/sync', async (req, res) => {
   const LOCATION_ID = contact.location_id;
   const CUSTOM_FIELD_ID = contact.custom_field_id;
   const CUSTOM_FIELD_KEY = contact.custom_field_key;
-
-  console.log('Received contact:', contact.sync_contact_id, contact.first_name, contact.last_name);
-
   
   const triggered_tag = contact.triggered_tag;
                       //contact.customData?.triggered_tag;
@@ -72,12 +69,12 @@ app.post('/sync', async (req, res) => {
   const source_contact_id = contact.sync_contact_id || req.body.extras.contactId; //haba naman variable name ya
 
   try {
-    let page = 1;
     let existingContact = null;
+    let startAfterId = null;
     let totalFetched = 0;
 
-    while (true) {
-      //fetch all contacts from NOLA (or apply allowed filters like email)
+    do {
+      //fetch all contacts from Target-Account (or apply allowed filters like email)
       const response = await axios.get(
         `https://services.leadconnectorhq.com/contacts`,
         {
@@ -89,35 +86,42 @@ app.post('/sync', async (req, res) => {
           params: {
             locationId: LOCATION_ID,
             limit: 100,  //limit is 100 max i think
-            page: page //pagination para sa loops
+            ...(startAfterId && { startAfterId }), // only include if not null
           }
         }
       );
 
-      const contacts = response.data.contacts;
+      const contacts = response.data.contacts || [];
       totalFetched += contacts.length; //track total fetched for logging
 
       //filter in code by custom field sync_contact_id
-      existingContact = response.data.contacts.find(c =>
-        c.customFields?.some(f => f.id === CUSTOM_FIELD_ID && f.value?.trim() === source_contact_id?.trim())
+      // existingContact = response.data.contacts.find(c =>
+      //   c.customFields?.some(f => f.id === CUSTOM_FIELD_ID && f.value?.trim() === source_contact_id?.trim())
+      // );
+
+      existingContact = contacts.find(c =>
+        c.customFields?.some(f =>
+          f.id === CUSTOM_FIELD_ID && f.value?.trim() === source_contact_id?.trim()
+        )
       );
 
-      if (existingContact) break; //found
+      if (contacts.length > 0) {
+        startAfterId = contacts[contacts.length - 1].id;
+      } else {
+        break; // no more contacts
+      }
 
-      if (contacts.length < 100) break; //no more pages
-
-      page++; //increment page for next loop
-    }
+    } while (!existingContact);
 
     console.log('Total contacts checked:', totalFetched);
     console.log('source_contact_id:', source_contact_id);
     console.log('existingContact:', existingContact);
-    console.log('Existing NOLA contact:', existingContact);
+    console.log('Existing contact:', existingContact);
 
     //Next: decide update or create based on existingContact
     if (existingContact) {
       console.log('----------');
-      console.log('Contact already exists in NOLA. Ready to UPDATE.');
+      console.log('Contact already exists in Target-Account. Ready to UPDATE.');
       const existingTags = existingContact.tags || [];
       const mergedTags = triggered_tag
         ? [...new Set([...existingTags, triggered_tag])]
@@ -139,7 +143,7 @@ app.post('/sync', async (req, res) => {
         ]
       };
 
-      console.log('Payload to NOLA (update):', JSON.stringify(updateData, null, 2));
+      console.log('Payload to Target-Account (update):', JSON.stringify(updateData, null, 2));
 
       try {
         const updateResponse = await axios.put(
@@ -155,7 +159,7 @@ app.post('/sync', async (req, res) => {
           }
         );
 
-        console.log('Updated NOLA contact:', updateResponse.data);
+        console.log('Updated Target-Account contact:', updateResponse.data);
       } catch (error) {
         const errData = error.response?.data;
         const isDuplicateEmail =
@@ -169,12 +173,12 @@ app.post('/sync', async (req, res) => {
             errData.meta.contactId
           );
         } else {
-          console.error('Error updating contact in NOLA:', errData || error.message);
+          console.error('Error updating contact in Target-Account:', errData || error.message);
         }
       }
     } else {
       console.log('----------');
-      console.log('Contact does NOT exist in NOLA. Ready to CREATE.');
+      console.log('Contact does NOT exist in Target-Account. Ready to CREATE.');
 
       const now = new Date().toISOString(); //timestamp if needed
 
@@ -195,7 +199,7 @@ app.post('/sync', async (req, res) => {
         locationId: LOCATION_ID
       };
 
-      console.log('Payload to NOLA (create):', JSON.stringify(createData, null, 2));
+      console.log('Payload to Target-Account (create):', JSON.stringify(createData, null, 2));
 
       const createResponse = await axios.post(
         'https://services.leadconnectorhq.com/contacts',
@@ -210,7 +214,7 @@ app.post('/sync', async (req, res) => {
         }
       );
 
-      console.log('Created new NOLA contact:', createResponse.data);
+      console.log('Created new Target-Account contact:', createResponse.data);
 
       //check if sync_contact_id is present
       const createdCustomFields = createResponse.data.contact.customFields || [];
@@ -237,7 +241,7 @@ app.post('/sync', async (req, res) => {
       console.log('Duplicate email found. Skipping creation. Existing contact ID:', errData.meta.contactId);
       return res.json({ status: 'skipped', reason: 'duplicate email' });
     } else {
-      console.error('Error creating contact in NOLA x:', errData || error.message);
+      console.error('Error creating contact in Target-Account x:', errData || error.message);
       return res.json({ status: 'Error syncing' });
     }
   }
