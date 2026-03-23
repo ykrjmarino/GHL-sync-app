@@ -69,54 +69,36 @@ app.post('/sync', async (req, res) => {
   const source_contact_id = contact.sync_contact_id || req.body.extras.contactId; //haba naman variable name ya
 
   try {
-    let existingContact = null;
-    let startAfterId = null;
-    let totalFetched = 0;
-
-    do {
-      //fetch all contacts from Target-Account (or apply allowed filters like email)
-      const response = await axios.get(
-        `https://services.leadconnectorhq.com/contacts`,
+    const searchPayload = {
+      locationId: LOCATION_ID,
+      page: 1,
+      pageLimit: 1, // only need 1 match
+      filters: [
         {
-          headers: {
-            Accept: 'application/json',
-            Version: '2021-07-28',
-            Authorization: `Bearer ${ACCESS_TOKEN}`
-          },
-          params: {
-            locationId: LOCATION_ID,
-            limit: 100,  //limit is 100 max i think
-            ...(startAfterId && { startAfterId }), // only include if not null
-          }
+          field: `customFields.${CUSTOM_FIELD_ID}`,
+          operator: "eq",
+          value: source_contact_id
         }
-      );
+      ]
+    };
 
-      const contacts = response.data.contacts || [];
-      totalFetched += contacts.length; //track total fetched for logging
-
-      //filter in code by custom field sync_contact_id
-      // existingContact = response.data.contacts.find(c =>
-      //   c.customFields?.some(f => f.id === CUSTOM_FIELD_ID && f.value?.trim() === source_contact_id?.trim())
-      // );
-
-      existingContact = contacts.find(c =>
-        c.customFields?.some(f =>
-          f.id === CUSTOM_FIELD_ID && f.value?.trim() === source_contact_id?.trim()
-        )
-      );
-
-      if (contacts.length > 0) {
-        startAfterId = contacts[contacts.length - 1].id;
-      } else {
-        break; // no more contacts
+    const searchResponse = await axios.post(
+      'https://services.leadconnectorhq.com/contacts/search',
+      searchPayload,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Version: '2021-07-28',
+          Authorization: `Bearer ${ACCESS_TOKEN}`
+        }
       }
-
-    } while (!existingContact);
-
-    console.log('Total contacts checked:', totalFetched);
+    );
+    
     console.log('source_contact_id:', source_contact_id);
-    console.log('existingContact:', existingContact);
-    console.log('Existing contact:', existingContact);
+    const existingContact = searchResponse.data.contacts?.[0] || null;
+    console.log('Existing contact (from search):', existingContact);  
+    
 
     //Next: decide update or create based on existingContact
     if (existingContact) {
