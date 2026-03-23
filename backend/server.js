@@ -39,21 +39,6 @@ app.post('/marketplace/testing', async (req, res) => {
 
 //this is the endpoint the webhook will call
 app.post('/sync', async (req, res) => {
-  /*
-  //====THIS IS ONLY WORKING WHEN TESTING IN MARKETPLACE APP====//
-          // HighLevel sends the payload as a single key //
-  const rawPayload = Object.keys(req.body)[0];
-  const contactData = JSON.parse(rawPayload);
-
-  const ACCESS_TOKEN = contactData.pit;
-  const LOCATION_ID = contactData.location_id;
-  const CUSTOM_FIELD_ID = contactData.custom_field_id; 
-  const CUSTOM_FIELD_KEY = contactData.custom_field_key; 
-
-  const contact = JSON.parse(rawPayload); // now you get proper fields
-  console.log('Received payload:', JSON.stringify(req.body, null, 2));
-  */
-
   const contact = req.body.data;
   const ACCESS_TOKEN = contact.pit;
   const LOCATION_ID = contact.location_id;
@@ -61,18 +46,16 @@ app.post('/sync', async (req, res) => {
   const CUSTOM_FIELD_KEY = contact.custom_field_key;
   
   const triggered_tag = contact.triggered_tag;
-                      //contact.customData?.triggered_tag;
   console.log('==================================================');
-  //console.log('Received full body:', contact);
   console.log('Received contact:', contact.sync_contact_id, contact.first_name, contact.last_name);
 
-  const source_contact_id = contact.sync_contact_id || req.body.extras.contactId; //haba naman variable name ya
+  const source_contact_id = contact.sync_contact_id || req.body.extras.contactId; 
 
   try {
     const searchPayload = {
       locationId: LOCATION_ID,
       page: 1,
-      pageLimit: 1, // only need 1 match
+      pageLimit: 1, //only need 1 match
       filters: [
         {
           field: `customFields.${CUSTOM_FIELD_ID}`,
@@ -95,11 +78,8 @@ app.post('/sync', async (req, res) => {
       }
     );
     
-    console.log('source_contact_id:', source_contact_id);
     const existingContact = searchResponse.data.contacts?.[0] || null;
-    console.log('Existing contact (from search):', existingContact);  
     
-
     //Next: decide update or create based on existingContact
     if (existingContact) {
       console.log('----------');
@@ -232,6 +212,5 @@ app.post('/sync', async (req, res) => {
 app.get("/", (req, res) => res.send("Backend is running sync proj"));
 
 app.listen(port, () => {
-  // db.connect();
   console.log(`✅ Backend running at http://localhost:${port} (ykrjm2026)`);
 });
