@@ -1,0 +1,237 @@
+import express from 'express';
+import axios from 'axios';
+import dotenv from 'dotenv'; //no need for this, it is not used in this code. you can remove this line. but i am a sentimental person so i will let it stay. it reminds me of the good old days when i used to use .env files... memories.
+
+dotenv.config(); 
+
+const app = express();
+const port = process.env.PORT || 8080;
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+//practice console log
+//test for marketplace app testing
+app.post('/marketplace/testing', async (req, res) => { 
+  console.log('==================================================');
+  console.log('Raw payload:', JSON.stringify(req.body, null, 2));
+
+  // Get the actual data key (first key of the object)
+  const rawKey = Object.keys(req.body)[0];
+  let contact = {};
+  
+  try {
+    contact = JSON.parse(rawKey);
+  } catch (err) {
+    console.error('Failed to parse contact:', err.message);
+  }
+
+  const triggered_tag = contact.triggered_tag;
+  const source_contact_id = contact.sync_contact_id;
+
+  console.log('Triggered tag from workflow:', triggered_tag ?? 'undefined');
+  console.log('Sync contact ID from workflow:', source_contact_id ?? 'undefined');
+  console.log('First name:', contact.first_name ?? 'undefined');
+  console.log('Last name:', contact.last_name ?? 'undefined');
+
+  res.sendStatus(200);
+});
+
+//this is the endpoint the webhook will call
+app.post('/sync', async (req, res) => {
+  /*
+  //====THIS IS ONLY WORKING WHEN TESTING IN MARKETPLACE APP====//
+          // HighLevel sends the payload as a single key //
+  const rawPayload = Object.keys(req.body)[0];
+  const contactData = JSON.parse(rawPayload);
+
+  const ACCESS_TOKEN = contactData.pit;
+  const LOCATION_ID = contactData.location_id;
+  const CUSTOM_FIELD_ID = contactData.custom_field_id; 
+  const CUSTOM_FIELD_KEY = contactData.custom_field_key; 
+
+  const contact = JSON.parse(rawPayload); // now you get proper fields
+  console.log('Received payload:', JSON.stringify(req.body, null, 2));
+  */
+
+  const contact = req.body.data;
+  const ACCESS_TOKEN = contact.pit;
+  const LOCATION_ID = contact.location_id;
+  const CUSTOM_FIELD_ID = contact.custom_field_id;
+  const CUSTOM_FIELD_KEY = contact.custom_field_key;
+  
+  const triggered_tag = contact.triggered_tag;
+                      //contact.customData?.triggered_tag;
+  console.log('==================================================');
+  //console.log('Received full body:', contact);
+  console.log('Received contact:', contact.sync_contact_id, contact.first_name, contact.last_name);
+
+  const source_contact_id = contact.sync_contact_id || req.body.extras.contactId; //haba naman variable name ya
+
+  try {
+    const searchPayload = {
+      locationId: LOCATION_ID,
+      page: 1,
+      pageLimit: 1, // only need 1 match
+      filters: [
+        {
+          field: `customFields.${CUSTOM_FIELD_ID}`,
+          operator: "eq",
+          value: source_contact_id
+        }
+      ]
+    };
+
+    const searchResponse = await axios.post(
+      'https://services.leadconnectorhq.com/contacts/search',
+      searchPayload,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Version: '2021-07-28',
+          Authorization: `Bearer ${ACCESS_TOKEN}`
+        }
+      }
+    );
+    
+    console.log('source_contact_id:', source_contact_id);
+    const existingContact = searchResponse.data.contacts?.[0] || null;
+    console.log('Existing contact (from search):', existingContact);  
+    
+
+    //Next: decide update or create based on existingContact
+    if (existingContact) {
+      console.log('----------');
+      console.log('Contact already exists in Target-Account. Ready to UPDATE.');
+      const existingTags = existingContact.tags || [];
+      const mergedTags = triggered_tag
+        ? [...new Set([...existingTags, triggered_tag])]
+        : existingTags;
+
+      const updateData = {
+        firstName: contact.first_name,
+        lastName: contact.last_name,
+        name: contact.full_name || `${contact.first_name} ${contact.last_name}`,
+        ...(contact.email ? { email: contact.email } : {}),
+        ...(contact.phone ? { phone: contact.phone } : {}),
+        tags: mergedTags,
+        customFields: [
+          {
+            id: CUSTOM_FIELD_ID, //is the id of our custom field na antagal ko hinanap
+            key: CUSTOM_FIELD_KEY, //contact.sync_contact_id
+            field_value: source_contact_id
+          }
+        ]
+      };
+
+      console.log('Payload to Target-Account (update):', JSON.stringify(updateData, null, 2));
+
+      try {
+        const updateResponse = await axios.put(
+          `https://services.leadconnectorhq.com/contacts/${existingContact.id}`,
+          updateData,
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              Version: '2021-07-28',
+              Authorization: `Bearer ${ACCESS_TOKEN}`
+            }
+          }
+        );
+
+        console.log('Updated Target-Account contact:', updateResponse.data);
+      } catch (error) {
+        const errData = error.response?.data;
+        const isDuplicateEmail =
+          error.response?.status === 400 &&
+          errData?.message?.includes('does not allow duplicated contacts') &&
+          errData?.meta?.matchingField === 'email';
+
+        if (isDuplicateEmail) {
+          console.log(
+            'Duplicate email found during update. Skipping. Existing contact ID:',
+            errData.meta.contactId
+          );
+        } else {
+          console.error('Error updating contact in Target-Account:', errData || error.message);
+        }
+      }
+    } else {
+      console.log('----------');
+      console.log('Contact does NOT exist in Target-Account. Ready to CREATE.');
+
+      const now = new Date().toISOString(); //timestamp if needed
+
+      const createData = {
+        firstName: contact.first_name,
+        lastName: contact.last_name,
+        name: contact.full_name || `${contact.first_name} ${contact.last_name}`,
+        ...(contact.email ? { email: contact.email } : {}),
+        ...(contact.phone ? { phone: contact.phone } : {}),
+        tags: triggered_tag ? [triggered_tag] : [],
+        customFields: [
+          {
+            id: CUSTOM_FIELD_ID, 
+            key: CUSTOM_FIELD_KEY,
+            field_value: source_contact_id
+          }
+        ],
+        locationId: LOCATION_ID
+      };
+
+      console.log('Payload to Target-Account (create):', JSON.stringify(createData, null, 2));
+
+      const createResponse = await axios.post(
+        'https://services.leadconnectorhq.com/contacts',
+        createData,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            Version: '2021-07-28',
+            Authorization: `Bearer ${ACCESS_TOKEN}`
+          }
+        }
+      );
+
+      console.log('Created new Target-Account contact:', createResponse.data);
+
+      //check if sync_contact_id is present
+      const createdCustomFields = createResponse.data.contact.customFields || [];
+      const syncIdField = createdCustomFields.find(f => f.id === CUSTOM_FIELD_ID);
+      
+      if (syncIdField) {
+        console.log('✅ sync_contact_id saved:', syncIdField.value);
+      } else {
+        console.warn('⚠️ sync_contact_id not saved in customFields!');
+      }
+    }
+    res.sendStatus(200);
+  } catch (error) {
+    const errData = error.response?.data;
+
+    const isDuplicateEmail =
+      error.response?.status === 400 &&
+      errData?.message?.includes('does not allow duplicated contacts') &&
+      errData?.meta?.matchingField === 'email';
+      //only skip when it is specifically the duplicate email error
+      //not all 400 errors should be ignored
+
+    if (isDuplicateEmail) {
+      console.log('Duplicate email found. Skipping creation. Existing contact ID:', errData.meta.contactId);
+      return res.json({ status: 'skipped', reason: 'duplicate email' });
+    } else {
+      console.error('Error creating contact in Target-Account x:', errData || error.message);
+      return res.json({ status: 'Error syncing' });
+    }
+  }
+});
+
+app.get("/", (req, res) => res.send("Backend is running sync proj"));
+
+app.listen(port, () => {
+  // db.connect();
+  console.log(`✅ Backend running at http://localhost:${port} (ykrjm2026)`);
+});
